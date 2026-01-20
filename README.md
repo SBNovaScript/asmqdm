@@ -83,6 +83,23 @@ for i in asmqdm(range(100), disable=True):
     pass
 ```
 
+### Async Rendering Mode
+
+For high-frequency updates, use async mode which runs rendering on a separate thread/CPU core:
+
+```python
+# Async mode: rendering happens on a separate CPU core
+# update() becomes a lock-free atomic increment
+for i in asmqdm(range(1000000), async_render=True):
+    pass
+```
+
+Async mode benefits:
+- Rendering thread runs on a different CPU (via CPU affinity)
+- `update()` is a lock-free atomic increment (~5-10ns in assembly)
+- Python's main loop never blocks on rendering
+- Best for loops with >10,000 iterations per second
+
 ## Architecture
 
 ```

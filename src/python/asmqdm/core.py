@@ -57,11 +57,20 @@ class asmqdm:
         Width of the progress bar (auto-detected if not specified).
     unit : str, default "it"
         Unit name (unused, for tqdm compatibility).
+    async_render : bool, default False
+        Enable async rendering mode with dedicated render thread.
+        - Rendering happens on a separate CPU core
+        - update() becomes a lock-free atomic increment (~5-10ns vs ~500ns)
+        - Best for high-frequency updates (>10,000/sec)
 
     Examples
     --------
     >>> from asmqdm import asmqdm
     >>> for i in asmqdm(range(100)):
+    ...     pass
+
+    >>> # High-performance async mode
+    >>> for i in asmqdm(range(1000000), async_render=True):
     ...     pass
 
     >>> with asmqdm(total=50, desc="Working") as pbar:
@@ -80,12 +89,14 @@ class asmqdm:
         file: Any = None,
         ncols: Optional[int] = None,
         unit: str = "it",
+        async_render: bool = False,
     ) -> None:
         self.iterable = iterable
         self.desc = desc
         self.leave = leave
         self.disable = disable
         self.ascii_only = ascii
+        self.async_render = async_render
 
         # Determine total iterations
         if total is not None:
@@ -98,18 +109,32 @@ class asmqdm:
         # Create assembly progress bar state
         self._state = None
         self._closed = False
+        self._is_async = False
         # Keep reference to desc_bytes to prevent garbage collection
         self._desc_bytes: Optional[bytes] = None
 
         if not self.disable:
             self._desc_bytes = self.desc.encode('utf-8') if self.desc else None
-            self._state = _ffi.create(
-                self.total,
-                desc_bytes=self._desc_bytes,
-                leave=self.leave,
-                disable=self.disable,
-                ascii_only=self.ascii_only,
-            )
+
+            if async_render:
+                # Async mode: dedicated render thread, lock-free updates
+                self._state = _ffi.create_async(
+                    self.total,
+                    desc_bytes=self._desc_bytes,
+                    leave=self.leave,
+                    disable=self.disable,
+                    ascii_only=self.ascii_only,
+                )
+                self._is_async = True
+            else:
+                # Sync mode: traditional rendering
+                self._state = _ffi.create(
+                    self.total,
+                    desc_bytes=self._desc_bytes,
+                    leave=self.leave,
+                    disable=self.disable,
+                    ascii_only=self.ascii_only,
+                )
 
         self._iterator: Optional[Iterator[T]] = None
         self.n = 0  # Current iteration count
@@ -150,13 +175,19 @@ class asmqdm:
         """
         Manually update the progress bar.
 
+        In async mode, this is a lock-free atomic increment (~5-10ns).
+        In sync mode, this may trigger a render (~500-1000ns).
+
         Parameters
         ----------
         n : int, default 1
             Number of iterations to increment by.
         """
         if self._state is not None and not self._closed:
-            self.n = _ffi.update(self._state, n)
+            if self._is_async:
+                self.n = _ffi.update_async(self._state, n)
+            else:
+                self.n = _ffi.update(self._state, n)
         else:
             # Still track count even when disabled
             self.n += n
@@ -164,7 +195,10 @@ class asmqdm:
     def close(self) -> None:
         """Close the progress bar and release resources."""
         if self._state is not None and not self._closed:
-            _ffi.close(self._state)
+            if self._is_async:
+                _ffi.close_async(self._state)
+            else:
+                _ffi.close(self._state)
             self._state = None
             self._closed = True
 

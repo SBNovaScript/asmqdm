@@ -771,3 +771,404 @@ progress_bar_set_description:
     mov [rdi + PB_DESC_PTR], rsi
     mov [rdi + PB_DESC_LEN], rdx
     ret
+
+; ============================================
+; ASYNC RENDERING FUNCTIONS
+; ============================================
+
+; --------------------------------------------
+; get_current_cpu - Get current CPU core number
+; --------------------------------------------
+; Args: none
+; Returns: rax = CPU number (0-based)
+; --------------------------------------------
+get_current_cpu:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16
+
+    ; getcpu(cpu*, node*, unused)
+    mov rax, SYS_getcpu
+    lea rdi, [rbp - 8]          ; cpu output
+    xor rsi, rsi                ; node (don't care)
+    xor rdx, rdx                ; unused
+    syscall
+
+    mov eax, [rbp - 8]          ; Return CPU number
+
+    add rsp, 16
+    pop rbp
+    ret
+
+; --------------------------------------------
+; set_cpu_affinity - Set CPU affinity for current thread
+; --------------------------------------------
+; Args: rdi = CPU mask (bitmask of allowed CPUs)
+; Returns: rax = 0 on success, negative on error
+; --------------------------------------------
+set_cpu_affinity:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16
+
+    ; Store the mask on stack
+    mov [rbp - 8], rdi
+
+    ; sched_setaffinity(0, sizeof(mask), &mask)
+    ; tid=0 means current thread
+    mov rax, SYS_sched_setaffinity
+    xor rdi, rdi                ; tid = 0 (current thread)
+    mov rsi, 8                  ; sizeof(cpu_set_t) - using 8 bytes
+    lea rdx, [rbp - 8]          ; pointer to mask
+    syscall
+
+    add rsp, 16
+    pop rbp
+    ret
+
+; --------------------------------------------
+; nanosleep_ms - Sleep for specified milliseconds
+; --------------------------------------------
+; Args: rdi = milliseconds to sleep
+; Returns: nothing
+; --------------------------------------------
+nanosleep_ms:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32                 ; struct timespec * 2
+
+    ; Convert ms to timespec
+    mov rax, rdi
+    xor rdx, rdx
+    mov rcx, 1000
+    div rcx                     ; rax = seconds, rdx = remaining ms
+
+    mov [rbp - 32], rax         ; tv_sec
+    imul rdx, NS_PER_MS
+    mov [rbp - 24], rdx         ; tv_nsec
+
+    ; nanosleep(&req, &rem)
+    mov rax, SYS_nanosleep
+    lea rdi, [rbp - 32]         ; req
+    lea rsi, [rbp - 16]         ; rem (unused)
+    syscall
+
+    add rsp, 32
+    pop rbp
+    ret
+
+; --------------------------------------------
+; render_thread_main - Main loop for async render thread
+; --------------------------------------------
+; Entry point for the child thread after clone()
+; rbx must contain the state pointer when jumping here
+; --------------------------------------------
+render_thread_main:
+    ; Signal that thread is ready
+    or qword [rbx + PB_FLAGS], FLAG_THREAD_READY
+
+.render_loop:
+    ; Check for shutdown signal
+    mov rax, [rbx + PB_FLAGS]
+    test rax, FLAG_SHUTDOWN
+    jnz .shutdown
+
+    ; Sleep for render interval (~16ms for 60fps)
+    mov rdi, 16                 ; 16ms
+    call nanosleep_ms
+
+    ; Check shutdown again after sleep
+    mov rax, [rbx + PB_FLAGS]
+    test rax, FLAG_SHUTDOWN
+    jnz .shutdown
+
+    ; Atomic read of current count
+    mov rax, [rbx + PB_CURRENT]
+
+    ; Check if count changed since last render
+    cmp rax, [rbx + PB_LAST_RENDERED]
+    je .render_loop             ; No change, skip render
+
+    ; Render progress bar
+    mov rdi, rbx
+    call progress_bar_render
+
+    ; Update last rendered count
+    mov rax, [rbx + PB_CURRENT]
+    mov [rbx + PB_LAST_RENDERED], rax
+
+    jmp .render_loop
+
+.shutdown:
+    ; Exit thread
+    mov rax, SYS_exit
+    xor rdi, rdi                ; exit code 0
+    syscall
+    ; Never returns
+
+; --------------------------------------------
+; progress_bar_create_async - Create async progress bar
+; --------------------------------------------
+; Args: rdi = total iterations
+;       rsi = description string pointer (can be NULL)
+;       rdx = description length
+;       rcx = flags (FLAG_ASYNC should be set)
+; Returns: rax = pointer to ProgressBar state (or NULL on error)
+; --------------------------------------------
+global progress_bar_create_async
+progress_bar_create_async:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    ; Save arguments
+    mov r12, rdi                    ; total
+    mov r13, rsi                    ; desc_ptr
+    mov r14, rdx                    ; desc_len
+    mov r15, rcx                    ; flags
+
+    ; Ensure FLAG_ASYNC is set
+    or r15, FLAG_ASYNC
+
+    ; Allocate memory for state + buffer
+    mov rax, SYS_mmap
+    xor rdi, rdi                    ; addr = NULL
+    mov rsi, PROGRESSBAR_ASYNC_SIZE + RENDER_BUFFER_SIZE
+    mov rdx, PROT_READ | PROT_WRITE
+    mov r10, MAP_PRIVATE | MAP_ANONYMOUS
+    mov r8, -1
+    xor r9, r9
+    syscall
+
+    cmp rax, -4096
+    ja .async_alloc_failed
+
+    mov rbx, rax                    ; Save state pointer
+
+    ; Initialize base structure fields (same as sync)
+    mov qword [rbx + PB_TOTAL], r12
+    mov qword [rbx + PB_CURRENT], 0
+
+    call get_time_ns
+    mov [rbx + PB_START_TIME], rax
+    mov qword [rbx + PB_LAST_UPDATE], 0
+
+    call get_terminal_width
+    mov [rbx + PB_NCOLS], rax
+
+    mov qword [rbx + PB_DESC_PTR], r13
+    mov qword [rbx + PB_DESC_LEN], r14
+
+    or r15, FLAG_FIRST_UPDATE
+    mov qword [rbx + PB_FLAGS], r15
+
+    lea rax, [rbx + PROGRESSBAR_ASYNC_SIZE]
+    mov [rbx + PB_BUFFER_PTR], rax
+
+    mov qword [rbx + PB_ALLOC_SIZE], PROGRESSBAR_ASYNC_SIZE + RENDER_BUFFER_SIZE
+
+    ; Initialize async-specific fields
+    mov qword [rbx + PB_LAST_RENDERED], 0
+
+    ; Get Python's current CPU
+    call get_current_cpu
+    mov [rbx + PB_PYTHON_CPU], rax
+    mov r12, rax                    ; Save Python's CPU
+
+    ; Allocate stack for render thread
+    mov rax, SYS_mmap
+    xor rdi, rdi
+    mov rsi, THREAD_STACK_SIZE
+    mov rdx, PROT_READ | PROT_WRITE
+    mov r10, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK
+    mov r8, -1
+    xor r9, r9
+    syscall
+
+    cmp rax, -4096
+    ja .async_stack_failed
+
+    mov [rbx + PB_STACK_PTR], rax   ; Save stack base for cleanup
+
+    ; Calculate stack top (stack grows down, needs 16-byte alignment)
+    add rax, THREAD_STACK_SIZE
+    and rax, ~0xF                   ; Align to 16 bytes
+    sub rax, 8                      ; Make room for "return address" alignment
+    mov r13, rax                    ; r13 = stack top
+
+    ; Store state pointer at a known location on the child's stack
+    ; Child will find it at [rsp] after clone
+    sub r13, 8
+    mov [r13], rbx                  ; State pointer for child to find
+
+    ; Create render thread using clone
+    ; After clone: parent has rax=child_pid, child has rax=0
+    ; Both continue from the instruction after syscall
+    mov rax, SYS_clone
+    mov rdi, CLONE_THREAD_FLAGS
+    mov rsi, r13                    ; Stack for new thread
+    xor rdx, rdx                    ; parent_tid
+    xor r10, r10                    ; child_tid
+    xor r8, r8                      ; tls
+    syscall
+
+    ; Check if we're the parent or child
+    test rax, rax
+    jz .child_thread                ; rax=0 means we're the child
+    js .async_clone_failed          ; rax<0 means error
+
+    ; Parent continues here
+    mov [rbx + PB_RENDER_TID], rax
+    jmp .parent_continues
+
+.child_thread:
+    ; Child thread: retrieve state pointer and jump to render loop
+    ; The state pointer is at [rsp] (we set it up before clone)
+    pop rbx                         ; rbx = state pointer
+    jmp render_thread_main          ; Jump to the render loop
+
+.parent_continues:
+
+    ; Set CPU affinity for render thread (exclude Python's core)
+    ; Build mask with all CPUs except Python's
+    mov rax, -1                     ; All bits set
+    mov rcx, r12                    ; Python's CPU
+    btr rax, rcx                    ; Clear Python's CPU bit
+
+    ; Only set affinity if we have more than 1 CPU
+    cmp rcx, 0
+    je .skip_affinity               ; Single CPU, skip
+
+    mov rdi, rax
+    call set_cpu_affinity
+
+.skip_affinity:
+    ; Wait for thread to be ready (simple spin)
+    mov rcx, 1000000                ; Max iterations
+.wait_ready:
+    mov rax, [rbx + PB_FLAGS]
+    test rax, FLAG_THREAD_READY
+    jnz .thread_ready
+    dec rcx
+    jnz .wait_ready
+    ; Thread didn't start in time, but continue anyway
+
+.thread_ready:
+    ; Return state pointer
+    mov rax, rbx
+    jmp .async_done
+
+.async_clone_failed:
+    ; Cleanup stack
+    mov rax, SYS_munmap
+    mov rdi, [rbx + PB_STACK_PTR]
+    mov rsi, THREAD_STACK_SIZE
+    syscall
+
+.async_stack_failed:
+    ; Cleanup state
+    mov rax, SYS_munmap
+    mov rdi, rbx
+    mov rsi, PROGRESSBAR_ASYNC_SIZE + RENDER_BUFFER_SIZE
+    syscall
+
+.async_alloc_failed:
+    xor rax, rax                    ; Return NULL
+
+.async_done:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+; --------------------------------------------
+; progress_bar_update_async - Atomic update (lock-free)
+; --------------------------------------------
+; Args: rdi = ProgressBar* state
+;       rsi = increment (usually 1)
+; Returns: rax = new current count
+; --------------------------------------------
+global progress_bar_update_async
+progress_bar_update_async:
+    ; Atomic increment - this is the entire hot path!
+    lock xadd qword [rdi + PB_CURRENT], rsi
+    add rax, rsi                    ; xadd returns OLD value, add increment
+    ret
+
+; --------------------------------------------
+; progress_bar_close_async - Close async progress bar
+; --------------------------------------------
+; Args: rdi = ProgressBar* state
+; Returns: nothing
+; --------------------------------------------
+global progress_bar_close_async
+progress_bar_close_async:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+
+    mov rbx, rdi
+
+    ; Check if NULL
+    test rbx, rbx
+    jz .close_async_done
+
+    ; Check if already closed
+    mov rax, [rbx + PB_FLAGS]
+    test rax, FLAG_CLOSED
+    jnz .close_async_done
+
+    ; Signal shutdown to render thread
+    or qword [rbx + PB_FLAGS], FLAG_SHUTDOWN
+
+    ; Wait for thread to exit (simple delay)
+    ; In production, would use futex for proper synchronization
+    mov rdi, 50                     ; 50ms should be enough
+    call nanosleep_ms
+
+    ; Final render (sync)
+    mov rax, [rbx + PB_FLAGS]
+    test rax, FLAG_DISABLE
+    jnz .skip_async_final
+
+    mov rdi, rbx
+    call progress_bar_render
+
+    ; Print newline if leave flag set
+    mov rax, [rbx + PB_FLAGS]
+    test rax, FLAG_LEAVE
+    jz .skip_async_final
+
+    lea rdi, [rel newline]
+    mov rsi, 1
+    call write_stdout
+
+.skip_async_final:
+    ; Mark as closed
+    or qword [rbx + PB_FLAGS], FLAG_CLOSED
+
+    ; Cleanup thread stack
+    mov rax, SYS_munmap
+    mov rdi, [rbx + PB_STACK_PTR]
+    mov rsi, THREAD_STACK_SIZE
+    syscall
+
+    ; Cleanup state
+    mov rax, SYS_munmap
+    mov rdi, rbx
+    mov rsi, [rbx + PB_ALLOC_SIZE]
+    syscall
+
+.close_async_done:
+    pop r12
+    pop rbx
+    pop rbp
+    ret

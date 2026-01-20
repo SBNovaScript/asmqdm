@@ -24,7 +24,7 @@ classifiers = [
 keywords = ["progress", "bar", "tqdm", "assembly", "x86_64"]
 requires-python = ">=3.8"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest>=7.0"]
 
 [tool.setuptools.packages.find]

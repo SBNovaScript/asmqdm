@@ -4,7 +4,7 @@
 # Tools
 NASM = nasm
 LD = ld
-PYTHON = python3
+UV = uv
 
 # Directories
 SRC_DIR = src/asm
@@ -41,11 +41,15 @@ install-lib: $(LIBRARY)
 
 # Install Python package in development mode
 install: install-lib
-	$(PYTHON) -m pip install -e .
+	$(UV) pip install -e .
+
+# Sync UV environment (creates venv if needed)
+sync: install-lib
+	$(UV) sync
 
 # Run tests
 test: install-lib
-	$(PYTHON) -m pytest tests/ -v
+	$(UV) run pytest tests/ -v
 
 # Clean build artifacts
 clean:
@@ -64,4 +68,4 @@ disasm: $(LIBRARY)
 symbols: $(LIBRARY)
 	nm $(LIBRARY)
 
-.PHONY: all install install-lib test clean debug disasm symbols
+.PHONY: all install install-lib sync test clean debug disasm symbols

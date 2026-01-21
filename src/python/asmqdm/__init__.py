@@ -5,7 +5,7 @@
 # Please retain this header, thank you!
 
 """
-asmqdm - x86_64 Assembly implementation of tqdm progress bar
+asmqdm - High-performance progress bar with x86_64 Assembly core
 
 A high-performance progress bar library implemented in x86_64 Assembly
 with a Python wrapper for seamless integration.

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release of asmqdm
 - Core progress bar implementation in x86_64 Assembly
-- Python wrapper with tqdm-compatible API
+- Python wrapper with intuitive API
 - `asmqdm` class with iterator protocol support
 - `trange` helper function for range iteration
 - Context manager support for manual update mode

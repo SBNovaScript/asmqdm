@@ -5,9 +5,9 @@
 # Please retain this header, thank you!
 
 """
-asmqdm - x86_64 Assembly implementation of tqdm progress bar
+asmqdm - High-performance progress bar with x86_64 Assembly core
 
-This module provides a tqdm-compatible API backed by an Assembly
+This module provides a progress bar API backed by an Assembly
 implementation for maximum performance on Linux x86_64 systems.
 
 Usage:
@@ -39,7 +39,7 @@ class asmqdm:
     """
     Assembly-powered progress bar iterator.
 
-    A drop-in replacement for tqdm that uses x86_64 Assembly for
+    A high-performance progress bar that uses x86_64 Assembly for
     the core progress bar rendering logic.
 
     Parameters
@@ -58,11 +58,11 @@ class asmqdm:
     ascii : bool, default False
         Use ASCII characters only for the progress bar.
     file : file-like, optional
-        Output file (unused, for tqdm compatibility).
+        Output file (unused, reserved for future use).
     ncols : int, optional
         Width of the progress bar (auto-detected if not specified).
     unit : str, default "it"
-        Unit name (unused, for tqdm compatibility).
+        Unit name (unused, reserved for future use).
     async_render : bool, default False
         Enable async rendering mode with dedicated render thread.
         - Rendering happens on a separate CPU core
@@ -230,7 +230,7 @@ class asmqdm:
 
     def set_postfix(self, **kwargs: Any) -> None:
         """
-        Set postfix info (stub for tqdm compatibility).
+        Set postfix info (stub, not yet implemented).
 
         Note: This is not yet implemented in the Assembly backend.
         """
@@ -255,7 +255,7 @@ class asmqdm:
         end : str, default "\\n"
             String to append after the message.
         nolock : bool, default False
-            Ignored (for tqdm compatibility).
+            Ignored (reserved for future use).
         """
         output = file if file is not None else sys.stderr
         # Clear line, print message, then progress bar will redraw
@@ -267,7 +267,7 @@ class asmqdm:
     @property
     def format_dict(self) -> dict:
         """
-        Return a dict with progress bar stats (for tqdm compatibility).
+        Return a dict with progress bar stats.
         """
         return {
             'n': self.n,

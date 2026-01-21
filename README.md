@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Linux x86_64](https://img.shields.io/badge/platform-linux%20x86__64-lightgrey.svg)](https://en.wikipedia.org/wiki/X86-64)
 
-x86_64 Assembly implementation of Python's tqdm progress bar library.
+A high-performance, tqdm-inspired progress bar library with core rendering implemented in x86_64 Assembly.
 
 ```
 Processing: 50%|###############---------------| 50/100 [00:05<00:05, 10it/s]
@@ -12,12 +12,12 @@ Processing: 50%|###############---------------| 50/100 [00:05<00:05, 10it/s]
 
 ## Overview
 
-asmqdm provides a high-performance progress bar for Python loops, with the core rendering logic implemented in x86_64 Assembly. It uses direct Linux syscalls for maximum performance while maintaining a tqdm-compatible Python API.
+asmqdm provides a high-performance progress bar for Python loops, with the core rendering logic implemented in x86_64 Assembly. It uses direct Linux syscalls for maximum performance.
 
 ## Features
 
 - **Pure Assembly Core**: Progress bar rendering, time tracking, and string formatting in x86_64 Assembly
-- **tqdm-Compatible API**: Drop-in replacement for basic tqdm usage
+- **Familiar API**: Simple, intuitive interface for wrapping iterables
 - **Direct Syscalls**: No libc dependency in the Assembly code - uses Linux syscalls directly
 - **Rate Limiting**: Intelligent update throttling (50ms) to minimize syscall overhead
 

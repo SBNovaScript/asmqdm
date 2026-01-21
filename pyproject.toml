@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "asmqdm"
 version = "0.1.0"
-description = "x86_64 Assembly implementation of tqdm progress bar"
+description = "High-performance progress bar with x86_64 Assembly core"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 authors = [

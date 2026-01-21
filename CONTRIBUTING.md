@@ -259,7 +259,7 @@ Documentation improvements are always appreciated:
 Areas where contributions are especially welcome:
 
 * Performance optimizations
-* Additional tqdm compatibility features
+* Additional features and functionality
 * Better error handling and messages
 * Test coverage improvements
 
@@ -288,7 +288,7 @@ The Python wrapper (`src/python/asmqdm/`) provides:
 * ctypes foreign function interface (FFI) bindings to the shared library
 * Iterator protocol implementation
 * Context manager support
-* tqdm-compatible API
+* Intuitive Python API
 
 ## Questions?
 

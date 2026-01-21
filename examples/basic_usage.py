@@ -8,7 +8,7 @@
 """
 Basic usage examples for asmqdm - Assembly-powered progress bar
 
-This demonstrates the main features of asmqdm, which provides a tqdm-compatible
+This demonstrates the main features of asmqdm, which provides a high-performance
 API backed by x86_64 Assembly for high-performance progress bar rendering.
 """
 

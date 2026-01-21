@@ -19,15 +19,19 @@ section .bss
 
 section .text
 
-; ============================================
+; ============================================================================
 ; UTILITY FUNCTIONS
-; ============================================
+; Internal helper functions for time, terminal, string, and I/O operations
+; ============================================================================
 
 ; --------------------------------------------
-; get_time_ns - Get current monotonic time in nanoseconds
+; _get_time_ns - Get current monotonic time in nanoseconds
 ; --------------------------------------------
-; Args: none
-; Returns: rax = nanoseconds since boot (monotonic)
+; @brief    Returns high-resolution monotonic timestamp
+; @param    none
+; @return   rax = nanoseconds since boot (monotonic)
+; @clobbers rcx, r11 (syscall)
+; @note     Uses CLOCK_MONOTONIC for drift-free timing
 ; --------------------------------------------
 global get_time_ns
 get_time_ns:
@@ -52,10 +56,13 @@ get_time_ns:
     ret
 
 ; --------------------------------------------
-; get_terminal_width - Get terminal width using ioctl
+; _get_terminal_width - Get terminal width using ioctl
 ; --------------------------------------------
-; Args: none
-; Returns: rax = terminal width (default 80 if fails)
+; @brief    Queries terminal dimensions via TIOCGWINSZ ioctl
+; @param    none
+; @return   rax = terminal width in columns (default 80 if fails)
+; @clobbers rcx, rdx, rsi, r11 (syscall)
+; @note     Falls back to DEFAULT_TERM_WIDTH on error or zero width
 ; --------------------------------------------
 global get_terminal_width
 get_terminal_width:
@@ -90,11 +97,14 @@ get_terminal_width:
     ret
 
 ; --------------------------------------------
-; int_to_str - Convert unsigned integer to decimal string
+; _int_to_str - Convert unsigned integer to decimal string
 ; --------------------------------------------
-; Args: rdi = buffer pointer (must have space for 20+ chars)
-;       rsi = unsigned integer value
-; Returns: rax = string length (not including null terminator)
+; @brief    Converts 64-bit unsigned integer to null-terminated ASCII string
+; @param    rdi = buffer pointer (must have space for 21 chars: 20 digits + null)
+; @param    rsi = unsigned integer value to convert
+; @return   rax = string length (not including null terminator)
+; @clobbers rcx, rdx, r8, r9 (rbx, r12 saved/restored)
+; @note     Handles zero case specially; reverses digits in-place
 ; --------------------------------------------
 global int_to_str
 int_to_str:
@@ -103,56 +113,52 @@ int_to_str:
     push rbx
     push r12
 
-    mov r12, rdi                    ; Save buffer start
-    mov rax, rsi                    ; Value to convert
+    mov r12, rdi                    ; buffer_start = rdi
+    mov rax, rsi                    ; value = rsi
 
-    ; Handle zero case
+    ; if (value == 0) { buffer[0] = '0'; return 1; }
     test rax, rax
     jnz .not_zero
     mov byte [rdi], '0'
-    mov byte [rdi + 1], 0           ; Null terminator
+    mov byte [rdi + 1], 0
     mov rax, 1
     jmp .done
 
 .not_zero:
-    ; We'll write digits in reverse, then reverse the string
-    xor rcx, rcx                    ; Digit count
-    mov rbx, 10
+    xor rcx, rcx                    ; i = 0 (digit count)
+    mov rbx, 10                     ; divisor = 10
 
-.digit_loop:
+.digit_loop:                        ; while (value != 0) {
     test rax, rax
     jz .reverse
 
     xor rdx, rdx
-    div rbx                         ; rax = quotient, rdx = remainder
-    add dl, '0'                     ; Convert to ASCII
-    mov [rdi + rcx], dl
-    inc rcx
-    jmp .digit_loop
+    div rbx                         ;   digit = value % 10; value /= 10
+    add dl, '0'                     ;   char = digit + '0'
+    mov [rdi + rcx], dl             ;   buffer[i] = char
+    inc rcx                         ;   i++
+    jmp .digit_loop                 ; }
 
-.reverse:
-    ; rcx = number of digits
-    ; Now reverse the string in place
-    mov r8, rdi                     ; r8 = left pointer
-    lea r9, [rdi + rcx - 1]         ; r9 = right pointer
+.reverse:                           ; Reverse buffer[0..i-1] in place
+    mov r8, rdi                     ; left = &buffer[0]
+    lea r9, [rdi + rcx - 1]         ; right = &buffer[i-1]
 
-.reverse_loop:
+.reverse_loop:                      ; while (left < right) {
     cmp r8, r9
     jge .reverse_done
 
-    ; Swap bytes at r8 and r9
-    mov al, [r8]
-    mov bl, [r9]
+    mov al, [r8]                    ;   tmp = *left
+    mov bl, [r9]                    ;   *left = *right
     mov [r8], bl
-    mov [r9], al
+    mov [r9], al                    ;   *right = tmp
 
-    inc r8
-    dec r9
-    jmp .reverse_loop
+    inc r8                          ;   left++
+    dec r9                          ;   right--
+    jmp .reverse_loop               ; }
 
 .reverse_done:
-    mov byte [rdi + rcx], 0         ; Null terminator
-    mov rax, rcx                    ; Return length
+    mov byte [rdi + rcx], 0         ; buffer[i] = '\0'
+    mov rax, rcx                    ; return i
 
 .done:
     pop r12
@@ -161,14 +167,17 @@ int_to_str:
     ret
 
 ; --------------------------------------------
-; copy_string - Copy string from source to destination
+; _copy_string - Copy string from source to destination
 ; --------------------------------------------
-; Args: rdi = destination pointer
-;       rsi = source pointer
-;       rdx = length (bytes to copy)
-; Returns: rax = destination + length (pointer to end)
+; @brief    Copies specified number of bytes from source to destination
+; @param    rdi = destination pointer
+; @param    rsi = source pointer
+; @param    rdx = length (bytes to copy)
+; @return   rax = destination + length (pointer past copied data)
+; @clobbers rcx, rsi, rdi (uses rep movsb)
+; @note     Returns original destination if length is zero
 ; --------------------------------------------
-copy_string:
+_copy_string:
     mov rcx, rdx
     test rcx, rcx
     jz .copy_done
@@ -185,13 +194,15 @@ copy_string:
     ret
 
 ; --------------------------------------------
-; write_stdout - Write buffer to stdout
+; _write_stdout - Write buffer to stdout
 ; --------------------------------------------
-; Args: rdi = buffer pointer
-;       rsi = length
-; Returns: rax = bytes written (or negative on error)
+; @brief    Writes buffer contents to standard output
+; @param    rdi = buffer pointer
+; @param    rsi = length in bytes
+; @return   rax = bytes written (or negative errno on error)
+; @clobbers rcx, rdx, rsi, rdi, r11 (syscall)
 ; --------------------------------------------
-write_stdout:
+_write_stdout:
     mov rdx, rsi                    ; length
     mov rsi, rdi                    ; buffer
     mov rdi, STDOUT                 ; fd
@@ -200,13 +211,16 @@ write_stdout:
     ret
 
 ; --------------------------------------------
-; format_time - Format seconds as MM:SS or HH:MM:SS
+; _format_time - Format seconds as MM:SS or HH:MM:SS
 ; --------------------------------------------
-; Args: rdi = buffer pointer (needs at least 9 bytes)
-;       rsi = total seconds
-; Returns: rax = string length
+; @brief    Converts seconds to human-readable time format
+; @param    rdi = buffer pointer (needs at least 9 bytes for HH:MM:SS)
+; @param    rsi = total seconds to format
+; @return   rax = string length written (5 for MM:SS, 8 for HH:MM:SS)
+; @clobbers rcx, rdx, r8, r9, r10 (rbx, r12, r13 saved/restored)
+; @note     Omits hours component if zero; always shows leading zeros
 ; --------------------------------------------
-format_time:
+_format_time:
     push rbp
     mov rbp, rsp
     push rbx
@@ -282,13 +296,16 @@ format_time:
     ret
 
 ; --------------------------------------------
-; format_rate - Format iterations per second
+; _format_rate - Format iterations per second
 ; --------------------------------------------
-; Args: rdi = buffer pointer
-;       rsi = iterations per second (integer)
-; Returns: rax = string length written
+; @brief    Formats iteration rate as "Nit/s" string
+; @param    rdi = buffer pointer (needs space for number + 4 chars)
+; @param    rsi = iterations per second (integer)
+; @return   rax = string length written
+; @clobbers rbx, rcx, rdx, r8, r9 (via _int_to_str)
+; @note     Appends "it/s" suffix to the number
 ; --------------------------------------------
-format_rate:
+_format_rate:
     push rbp
     mov rbp, rsp
     push rbx
@@ -314,18 +331,22 @@ format_rate:
     pop rbp
     ret
 
-; ============================================
-; PROGRESS BAR FUNCTIONS
-; ============================================
+; ============================================================================
+; PROGRESS BAR FUNCTIONS - SYNC MODE
+; Core progress bar API for synchronous (single-threaded) operation
+; ============================================================================
 
 ; --------------------------------------------
 ; progress_bar_create - Create a new progress bar
 ; --------------------------------------------
-; Args: rdi = total iterations
-;       rsi = description string pointer (can be NULL)
-;       rdx = description length
-;       rcx = flags
-; Returns: rax = pointer to ProgressBar state (or NULL on error)
+; @brief    Allocates and initializes a new progress bar instance
+; @param    rdi = total iterations (0 for indeterminate)
+; @param    rsi = description string pointer (can be NULL)
+; @param    rdx = description length in bytes
+; @param    rcx = flags (FLAG_LEAVE, FLAG_DISABLE, FLAG_ASCII)
+; @return   rax = pointer to ProgressBar state (or NULL on allocation failure)
+; @clobbers rcx, rdx, rsi, rdi, r8, r9, r10, r11 (rbx, r12-r15 saved)
+; @note     Memory allocated via mmap; caller must call progress_bar_close
 ; --------------------------------------------
 global progress_bar_create
 progress_bar_create:
@@ -407,9 +428,13 @@ progress_bar_create:
 ; --------------------------------------------
 ; progress_bar_update - Update progress bar
 ; --------------------------------------------
-; Args: rdi = ProgressBar* state
-;       rsi = increment (usually 1)
-; Returns: rax = current count
+; @brief    Increments progress counter and conditionally renders
+; @param    rdi = ProgressBar* state pointer
+; @param    rsi = increment value (usually 1)
+; @return   rax = new current count after increment
+; @clobbers rcx, rdx, r8-r11 (rbx, r12, r13 saved)
+; @note     Renders at most once per MIN_UPDATE_INTERVAL (50ms)
+; @note     First call always renders regardless of interval
 ; --------------------------------------------
 global progress_bar_update
 progress_bar_update:
@@ -464,31 +489,44 @@ progress_bar_update:
 ; --------------------------------------------
 ; progress_bar_render - Render progress bar to stdout
 ; --------------------------------------------
-; Args: rdi = ProgressBar* state
-; Returns: nothing
+; @brief    Formats and writes progress bar to terminal
+; @param    rdi = ProgressBar* state pointer
+; @return   none
+; @clobbers rax, rcx, rdx, rsi, rdi, r8-r15 (all caller-save + uses stack)
+; @note     Output format: "desc: NN%|####----| current/total [MM:SS<MM:SS, Nit/s]"
+; @note     Automatically adjusts bar width based on terminal size
 ; --------------------------------------------
 global progress_bar_render
 progress_bar_render:
     push rbp
     mov rbp, rsp
-    sub rsp, 64                     ; Local variables
+    sub rsp, 64                     ; Local vars: [rbp-8] = elapsed_seconds
     push rbx
     push r12
     push r13
     push r14
     push r15
 
-    mov rbx, rdi                    ; State pointer
-    mov r12, [rbx + PB_BUFFER_PTR]  ; Buffer pointer
-    mov r13, r12                    ; Current write position
+    ; Register allocation:
+    ; rbx = state pointer (ProgressBar*)
+    ; r12 = buffer start pointer
+    ; r13 = current write position (cursor)
+    ; r14 = percentage (0-100)
+    ; r15 = bar width in characters
 
-    ; --- Start building output string ---
+    mov rbx, rdi                    ; state = rdi
+    mov r12, [rbx + PB_BUFFER_PTR]  ; buf = state->buffer
+    mov r13, r12                    ; cursor = buf
 
-    ; Write carriage return to go back to start of line
+    ; ===== BUILD OUTPUT STRING =====
+    ; Format: "\rdesc: NN%|####----| current/total [MM:SS<MM:SS, Nit/s]"
+
+    ; *cursor++ = '\r'  (carriage return - overwrite current line)
     mov byte [r13], 0x0D
     inc r13
 
-    ; Add description if present
+    ; ----- DESCRIPTION PREFIX -----
+    ; if (desc_ptr && desc_len) { memcpy; cursor += ": " }
     mov rsi, [rbx + PB_DESC_PTR]
     test rsi, rsi
     jz .render_no_desc
@@ -497,78 +535,76 @@ progress_bar_render:
     test rcx, rcx
     jz .render_no_desc
 
-    ; Copy description
-    mov rdi, r13
+    mov rdi, r13                    ; memcpy(cursor, desc_ptr, desc_len)
     mov rdx, rcx
-    call copy_string
-    mov r13, rax
+    call _copy_string
+    mov r13, rax                    ; cursor = end of copied string
 
-    ; Add ": "
-    mov byte [r13], ':'
-    mov byte [r13 + 1], ' '
+    mov byte [r13], ':'             ; *cursor++ = ':'
+    mov byte [r13 + 1], ' '         ; *cursor++ = ' '
     add r13, 2
 
 .render_no_desc:
-    ; Calculate percentage: (current * 100) / total
+    ; ----- PERCENTAGE CALCULATION -----
+    ; percent = (current * 100) / total, clamped to [0, 100]
     mov rax, [rbx + PB_CURRENT]
     mov rcx, 100
-    imul rax, rcx
+    imul rax, rcx                   ; rax = current * 100
     mov rcx, [rbx + PB_TOTAL]
     test rcx, rcx
-    jz .render_zero_percent
+    jz .render_zero_percent         ; avoid division by zero
     xor rdx, rdx
-    div rcx
+    div rcx                         ; rax = (current * 100) / total
     jmp .render_got_percent
 .render_zero_percent:
     xor rax, rax
 .render_got_percent:
-    mov r14, rax                    ; r14 = percentage (0-100)
+    mov r14, rax                    ; percent = rax
 
-    ; Clamp percentage to 100
-    cmp r14, 100
+    cmp r14, 100                    ; percent = min(percent, 100)
     jle .render_percent_ok
     mov r14, 100
 .render_percent_ok:
 
-    ; Write percentage number
+    ; ----- PERCENTAGE DISPLAY -----
+    ; cursor += sprintf(cursor, "%d", percent)
     mov rdi, r13
     mov rsi, r14
     call int_to_str
     add r13, rax
 
-    ; Add "%|"
+    ; *cursor++ = '%'; *cursor++ = '|'
     mov byte [r13], '%'
     mov byte [r13 + 1], '|'
     add r13, 2
 
-    ; Calculate bar width
-    ; Available width = ncols - desc_len - overhead (~35 chars for counters)
+    ; ----- PROGRESS BAR CALCULATION -----
+    ; bar_width = clamp(ncols - desc_len - 40, 10, 50)
     mov rax, [rbx + PB_NCOLS]
     sub rax, [rbx + PB_DESC_LEN]
-    sub rax, 40                     ; Overhead for numbers, brackets, etc.
+    sub rax, 40                     ; overhead for counters, brackets, etc.
 
-    ; Clamp bar width between 10 and 50
-    cmp rax, 10
+    cmp rax, 10                     ; bar_width = max(bar_width, 10)
     jge .render_bar_min_ok
     mov rax, 10
 .render_bar_min_ok:
-    cmp rax, 50
+    cmp rax, 50                     ; bar_width = min(bar_width, 50)
     jle .render_bar_max_ok
     mov rax, 50
 .render_bar_max_ok:
-    mov r15, rax                    ; r15 = bar width
+    mov r15, rax                    ; r15 = bar_width
 
-    ; Calculate filled portion: (percentage * bar_width) / 100
+    ; filled = (percent * bar_width) / 100
     mov rax, r14
     imul rax, r15
     mov rcx, 100
     xor rdx, rdx
     div rcx
-    ; rax = filled count
+    mov r8, rax                     ; r8 = filled count
 
-    ; Draw filled portion
-    mov rcx, rax
-    mov r8, rcx                     ; Save filled count
+    ; ----- DRAW PROGRESS BAR -----
+    ; for (i = 0; i < filled; i++) *cursor++ = '#'
+    mov rcx, r8
 .render_fill_loop:
     test rcx, rcx
     jz .render_fill_done
@@ -578,7 +614,7 @@ progress_bar_render:
     jmp .render_fill_loop
 .render_fill_done:
 
-    ; Draw empty portion
+    ; for (i = 0; i < bar_width - filled; i++) *cursor++ = '-'
     mov rcx, r15
     sub rcx, r8                     ; empty = bar_width - filled
 .render_empty_loop:
@@ -590,88 +626,95 @@ progress_bar_render:
     jmp .render_empty_loop
 .render_empty_done:
 
-    ; Add "| "
+    ; ----- COUNTER DISPLAY -----
+    ; *cursor++ = '|'; *cursor++ = ' '
     mov byte [r13], '|'
     mov byte [r13 + 1], ' '
     add r13, 2
 
-    ; Add current/total
+    ; cursor += sprintf(cursor, "%d", current)
     mov rdi, r13
     mov rsi, [rbx + PB_CURRENT]
     call int_to_str
     add r13, rax
 
+    ; *cursor++ = '/'
     mov byte [r13], '/'
     inc r13
 
+    ; cursor += sprintf(cursor, "%d", total)
     mov rdi, r13
     mov rsi, [rbx + PB_TOTAL]
     call int_to_str
     add r13, rax
 
-    ; Add " ["
+    ; *cursor++ = ' '; *cursor++ = '['
     mov byte [r13], ' '
     mov byte [r13 + 1], '['
     add r13, 2
 
-    ; Calculate elapsed time in seconds and update last_update
+    ; ----- TIME CALCULATIONS -----
+    ; now = get_time_ns(); state->last_update = now
     call get_time_ns
     mov [rbx + PB_LAST_UPDATE], rax
 
-    ; Get elapsed
+    ; elapsed_ns = now - start_time
     mov rcx, [rbx + PB_START_TIME]
     sub rax, rcx
 
-    ; Convert to seconds
+    ; elapsed_sec = elapsed_ns / NS_PER_SEC
     mov rcx, NS_PER_SEC
     xor rdx, rdx
-    div rcx                         ; rax = elapsed seconds
-    mov [rbp - 8], rax              ; Store elapsed seconds
+    div rcx
+    mov [rbp - 8], rax              ; store elapsed_sec for later
 
-    ; Format elapsed time
+    ; cursor += format_time(cursor, elapsed_sec)
     mov rdi, r13
     mov rsi, rax
-    call format_time
+    call _format_time
     add r13, rax
 
-    ; Add "<" for remaining time
+    ; *cursor++ = '<'  (separator before ETA)
     mov byte [r13], '<'
     inc r13
 
-    ; Calculate remaining time (ETA)
-    ; remaining = elapsed * (total - current) / current
+    ; ----- ETA CALCULATION -----
+    ; eta_sec = elapsed_sec * (total - current) / current
+    ; (linear extrapolation based on current rate)
     mov rax, [rbx + PB_CURRENT]
     test rax, rax
-    jz .render_unknown_eta
+    jz .render_unknown_eta          ; if (current == 0) eta = 0
 
     mov rcx, [rbx + PB_TOTAL]
-    sub rcx, rax                    ; remaining iterations
-    jle .render_unknown_eta         ; If current >= total, ETA = 0
+    sub rcx, rax                    ; remaining = total - current
+    jle .render_unknown_eta         ; if (remaining <= 0) eta = 0
 
-    mov rax, [rbp - 8]              ; elapsed seconds
-    imul rax, rcx                   ; elapsed * remaining_iterations
+    mov rax, [rbp - 8]              ; elapsed_sec
+    imul rax, rcx                   ; elapsed_sec * remaining
     mov rcx, [rbx + PB_CURRENT]
     xor rdx, rdx
-    div rcx                         ; eta_seconds
+    div rcx                         ; eta_sec = (elapsed * remaining) / current
     jmp .render_format_eta
 
 .render_unknown_eta:
-    xor rax, rax                    ; ETA = 0
+    xor rax, rax
 .render_format_eta:
+    ; cursor += format_time(cursor, eta_sec)
     mov rdi, r13
     mov rsi, rax
-    call format_time
+    call _format_time
     add r13, rax
 
-    ; Add ", "
+    ; *cursor++ = ','; *cursor++ = ' '
     mov byte [r13], ','
     mov byte [r13 + 1], ' '
     add r13, 2
 
-    ; Calculate rate (iterations per second)
-    mov rax, [rbp - 8]              ; elapsed seconds
+    ; ----- RATE CALCULATION -----
+    ; rate = current / elapsed_sec (iterations per second)
+    mov rax, [rbp - 8]              ; elapsed_sec
     test rax, rax
-    jz .render_rate_zero
+    jz .render_rate_zero            ; if (elapsed == 0) rate = 0
 
     mov rcx, [rbx + PB_CURRENT]
     xchg rax, rcx                   ; rax = current, rcx = elapsed
@@ -682,22 +725,22 @@ progress_bar_render:
 .render_rate_zero:
     xor rax, rax
 .render_format_rate:
+    ; cursor += format_rate(cursor, rate)  (appends "it/s")
     mov rdi, r13
     mov rsi, rax
-    call format_rate
+    call _format_rate
     add r13, rax
 
-    ; Add "]"
+    ; *cursor++ = ']'
     mov byte [r13], ']'
     inc r13
 
-    ; Calculate total output length
+    ; ----- WRITE TO TERMINAL -----
+    ; write(STDOUT, buffer, cursor - buffer)
     mov rsi, r13
-    sub rsi, r12                    ; length = end - start
-
-    ; Write to stdout
-    mov rdi, r12
-    call write_stdout
+    sub rsi, r12                    ; length = cursor - buffer_start
+    mov rdi, r12                    ; buffer
+    call _write_stdout
 
     pop r15
     pop r14
@@ -711,8 +754,12 @@ progress_bar_render:
 ; --------------------------------------------
 ; progress_bar_close - Close and cleanup progress bar
 ; --------------------------------------------
-; Args: rdi = ProgressBar* state
-; Returns: nothing
+; @brief    Performs final render, prints newline, and frees memory
+; @param    rdi = ProgressBar* state pointer (NULL-safe)
+; @return   none
+; @clobbers rax, rcx, rdx, rsi, rdi, r11 (rbx saved)
+; @note     Safe to call multiple times; tracks closed state via FLAG_CLOSED
+; @note     Prints newline only if FLAG_LEAVE is set
 ; --------------------------------------------
 global progress_bar_close
 progress_bar_close:
@@ -747,7 +794,7 @@ progress_bar_close:
     ; Print newline
     lea rdi, [rel newline]
     mov rsi, 1
-    call write_stdout
+    call _write_stdout
 
 .close_skip_final_render:
     ; Mark as closed
@@ -767,10 +814,13 @@ progress_bar_close:
 ; --------------------------------------------
 ; progress_bar_set_description - Update description
 ; --------------------------------------------
-; Args: rdi = ProgressBar* state
-;       rsi = new description pointer
-;       rdx = new description length
-; Returns: nothing
+; @brief    Updates the description prefix shown before the progress bar
+; @param    rdi = ProgressBar* state pointer
+; @param    rsi = new description string pointer
+; @param    rdx = new description length in bytes
+; @return   none
+; @clobbers none
+; @note     Does not copy string; caller must ensure pointer remains valid
 ; --------------------------------------------
 global progress_bar_set_description
 progress_bar_set_description:
@@ -778,17 +828,21 @@ progress_bar_set_description:
     mov [rdi + PB_DESC_LEN], rdx
     ret
 
-; ============================================
+; ============================================================================
 ; ASYNC RENDERING FUNCTIONS
-; ============================================
+; Async mode with dedicated render thread for lock-free updates
+; ============================================================================
 
 ; --------------------------------------------
-; get_current_cpu - Get current CPU core number
+; _get_current_cpu - Get current CPU core number
 ; --------------------------------------------
-; Args: none
-; Returns: rax = CPU number (0-based)
+; @brief    Returns the CPU core the calling thread is running on
+; @param    none
+; @return   rax = CPU number (0-based)
+; @clobbers rcx, rdx, rsi, rdi, r11 (syscall)
+; @note     Used for CPU affinity optimization
 ; --------------------------------------------
-get_current_cpu:
+_get_current_cpu:
     push rbp
     mov rbp, rsp
     sub rsp, 16
@@ -807,12 +861,15 @@ get_current_cpu:
     ret
 
 ; --------------------------------------------
-; set_cpu_affinity - Set CPU affinity for current thread
+; _set_cpu_affinity - Set CPU affinity for current thread
 ; --------------------------------------------
-; Args: rdi = CPU mask (bitmask of allowed CPUs)
-; Returns: rax = 0 on success, negative on error
+; @brief    Restricts current thread to specified CPU cores
+; @param    rdi = CPU mask (bitmask where bit N = CPU N allowed)
+; @return   rax = 0 on success, negative errno on error
+; @clobbers rcx, rdx, rsi, r11 (syscall)
+; @note     Used to isolate render thread from Python's CPU
 ; --------------------------------------------
-set_cpu_affinity:
+_set_cpu_affinity:
     push rbp
     mov rbp, rsp
     sub rsp, 16
@@ -833,12 +890,15 @@ set_cpu_affinity:
     ret
 
 ; --------------------------------------------
-; nanosleep_ms - Sleep for specified milliseconds
+; _nanosleep_ms - Sleep for specified milliseconds
 ; --------------------------------------------
-; Args: rdi = milliseconds to sleep
-; Returns: nothing
+; @brief    Suspends execution for the specified duration
+; @param    rdi = milliseconds to sleep
+; @return   none
+; @clobbers rax, rcx, rdx, rsi, r11 (syscall)
+; @note     Converts ms to timespec internally; may wake early on signal
 ; --------------------------------------------
-nanosleep_ms:
+_nanosleep_ms:
     push rbp
     mov rbp, rsp
     sub rsp, 32                 ; struct timespec * 2
@@ -864,62 +924,68 @@ nanosleep_ms:
     ret
 
 ; --------------------------------------------
-; render_thread_main - Main loop for async render thread
+; _render_thread_main - Main loop for async render thread
 ; --------------------------------------------
-; Entry point for the child thread after clone()
-; rbx must contain the state pointer when jumping here
+; @brief    Entry point and main loop for the dedicated render thread
+; @param    rbx = ProgressBar* state pointer (set before jump)
+; @return   never returns (exits via SYS_exit)
+; @clobbers all registers (thread entry point)
+; @note     Renders at ~60fps when progress changes; checks FLAG_SHUTDOWN to exit
 ; --------------------------------------------
-render_thread_main:
-    ; Signal that thread is ready
+_render_thread_main:
+    ; flags |= FLAG_THREAD_READY  (signal parent we're running)
     or qword [rbx + PB_FLAGS], FLAG_THREAD_READY
 
-.render_loop:
-    ; Check for shutdown signal
+.render_loop:                       ; while (true) {
+    ; if (flags & FLAG_SHUTDOWN) goto shutdown
     mov rax, [rbx + PB_FLAGS]
     test rax, FLAG_SHUTDOWN
     jnz .shutdown
 
-    ; Sleep for render interval (~16ms for 60fps)
-    mov rdi, 16                 ; 16ms
-    call nanosleep_ms
+    ; sleep(16ms)  (~60fps refresh rate)
+    mov rdi, 16
+    call _nanosleep_ms
 
-    ; Check shutdown again after sleep
+    ; if (flags & FLAG_SHUTDOWN) goto shutdown  (check after wake)
     mov rax, [rbx + PB_FLAGS]
     test rax, FLAG_SHUTDOWN
     jnz .shutdown
 
-    ; Atomic read of current count
+    ; current = atomic_load(pb->current)
     mov rax, [rbx + PB_CURRENT]
 
-    ; Check if count changed since last render
+    ; if (current == last_rendered) continue  (no change, skip render)
     cmp rax, [rbx + PB_LAST_RENDERED]
-    je .render_loop             ; No change, skip render
+    je .render_loop
 
-    ; Render progress bar
+    ; render(pb)
     mov rdi, rbx
     call progress_bar_render
 
-    ; Update last rendered count
+    ; last_rendered = current
     mov rax, [rbx + PB_CURRENT]
     mov [rbx + PB_LAST_RENDERED], rax
 
-    jmp .render_loop
+    jmp .render_loop                ; }
 
-.shutdown:
-    ; Exit thread
+.shutdown:                          ; Thread exit
     mov rax, SYS_exit
-    xor rdi, rdi                ; exit code 0
+    xor rdi, rdi                    ; exit(0)
     syscall
     ; Never returns
 
 ; --------------------------------------------
 ; progress_bar_create_async - Create async progress bar
 ; --------------------------------------------
-; Args: rdi = total iterations
-;       rsi = description string pointer (can be NULL)
-;       rdx = description length
-;       rcx = flags (FLAG_ASYNC should be set)
-; Returns: rax = pointer to ProgressBar state (or NULL on error)
+; @brief    Creates progress bar with dedicated render thread
+; @param    rdi = total iterations
+; @param    rsi = description string pointer (can be NULL)
+; @param    rdx = description length in bytes
+; @param    rcx = flags (FLAG_ASYNC added automatically)
+; @return   rax = pointer to ProgressBar state (or NULL on error)
+; @clobbers all caller-save registers (rbx, r12-r15 saved)
+; @note     Spawns render thread via clone(); sets CPU affinity for isolation
+; @note     Caller must use progress_bar_update_async and progress_bar_close_async
 ; --------------------------------------------
 global progress_bar_create_async
 progress_bar_create_async:
@@ -981,7 +1047,7 @@ progress_bar_create_async:
     mov qword [rbx + PB_LAST_RENDERED], 0
 
     ; Get Python's current CPU
-    call get_current_cpu
+    call _get_current_cpu
     mov [rbx + PB_PYTHON_CPU], rax
     mov r12, rax                    ; Save Python's CPU
 
@@ -1035,7 +1101,7 @@ progress_bar_create_async:
     ; Child thread: retrieve state pointer and jump to render loop
     ; The state pointer is at [rsp] (we set it up before clone)
     pop rbx                         ; rbx = state pointer
-    jmp render_thread_main          ; Jump to the render loop
+    jmp _render_thread_main          ; Jump to the render loop
 
 .parent_continues:
 
@@ -1050,7 +1116,7 @@ progress_bar_create_async:
     je .skip_affinity               ; Single CPU, skip
 
     mov rdi, rax
-    call set_cpu_affinity
+    call _set_cpu_affinity
 
 .skip_affinity:
     ; Wait for thread to be ready (simple spin)
@@ -1097,9 +1163,13 @@ progress_bar_create_async:
 ; --------------------------------------------
 ; progress_bar_update_async - Atomic update (lock-free)
 ; --------------------------------------------
-; Args: rdi = ProgressBar* state
-;       rsi = increment (usually 1)
-; Returns: rax = new current count
+; @brief    Lock-free atomic increment of progress counter
+; @param    rdi = ProgressBar* state pointer
+; @param    rsi = increment value (usually 1)
+; @return   rax = new current count after increment
+; @clobbers none (single atomic instruction)
+; @note     ~5-10ns per call; render thread reads counter asynchronously
+; @note     Uses LOCK XADD for atomic read-modify-write
 ; --------------------------------------------
 global progress_bar_update_async
 progress_bar_update_async:
@@ -1111,8 +1181,12 @@ progress_bar_update_async:
 ; --------------------------------------------
 ; progress_bar_close_async - Close async progress bar
 ; --------------------------------------------
-; Args: rdi = ProgressBar* state
-; Returns: nothing
+; @brief    Signals render thread shutdown, waits, renders final state, frees memory
+; @param    rdi = ProgressBar* state pointer (NULL-safe)
+; @return   none
+; @clobbers all caller-save registers (rbx, r12 saved)
+; @note     Sets FLAG_SHUTDOWN and waits 50ms for thread exit
+; @note     Frees both thread stack and state memory via munmap
 ; --------------------------------------------
 global progress_bar_close_async
 progress_bar_close_async:
@@ -1138,7 +1212,7 @@ progress_bar_close_async:
     ; Wait for thread to exit (simple delay)
     ; In production, would use futex for proper synchronization
     mov rdi, 50                     ; 50ms should be enough
-    call nanosleep_ms
+    call _nanosleep_ms
 
     ; Final render (sync)
     mov rax, [rbx + PB_FLAGS]
@@ -1155,7 +1229,7 @@ progress_bar_close_async:
 
     lea rdi, [rel newline]
     mov rsi, 1
-    call write_stdout
+    call _write_stdout
 
 .skip_async_final:
     ; Mark as closed

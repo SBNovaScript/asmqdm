@@ -1,5 +1,9 @@
 # asmqdm
 
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Linux x86_64](https://img.shields.io/badge/platform-linux%20x86__64-lightgrey.svg)](https://en.wikipedia.org/wiki/X86-64)
+
 x86_64 Assembly implementation of Python's tqdm progress bar library.
 
 ```
@@ -25,9 +29,11 @@ asmqdm provides a high-performance progress bar for Python loops, with the core 
 
 ## Installation
 
+### From Source
+
 ```bash
 # Clone the repository
-git clone https://github.com/yourname/asmqdm.git
+git clone https://github.com/SBNovaScript/asmqdm.git
 cd asmqdm
 
 # Build the shared library
@@ -36,6 +42,12 @@ make
 # Install in development mode
 make install
 ```
+
+### Requirements
+
+- **Linux x86_64** - Uses direct Linux syscalls, not portable to other platforms
+- **NASM** - Required to build the Assembly code
+- **Python 3.8+** - For the Python wrapper
 
 ## Usage
 
@@ -183,6 +195,14 @@ Create a progress bar.
 
 Shortcut for `asmqdm(range(*args), **kwargs)`.
 
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
+
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) and [NOTICE](NOTICE) files for details.

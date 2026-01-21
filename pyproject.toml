@@ -7,11 +7,17 @@ name = "asmqdm"
 version = "0.1.0"
 description = "x86_64 Assembly implementation of tqdm progress bar"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "SBNovaScript"}
+]
+maintainers = [
+    {name = "SBNovaScript"}
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Assembly",
     "Programming Language :: Python :: 3",
@@ -21,8 +27,14 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-keywords = ["progress", "bar", "tqdm", "assembly", "x86_64"]
+keywords = ["progress", "bar", "tqdm", "assembly", "x86_64", "performance", "linux"]
 requires-python = ">=3.8"
+
+[project.urls]
+Homepage = "https://github.com/SBNovaScript/asmqdm"
+Repository = "https://github.com/SBNovaScript/asmqdm"
+Issues = "https://github.com/SBNovaScript/asmqdm/issues"
+Changelog = "https://github.com/SBNovaScript/asmqdm/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = ["pytest>=7.0"]

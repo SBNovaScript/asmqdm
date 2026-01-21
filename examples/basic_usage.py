@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026-present Steven Baumann (@SBNovaScript)
+# Original repository: https://github.com/SBNovaScript/asmqdm
+# See LICENSE and NOTICE in the repository root for details.
+# Please retain this header, thank you!
+
 """
 Basic usage examples for asmqdm - Assembly-powered progress bar
 
